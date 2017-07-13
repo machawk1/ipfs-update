@@ -48,6 +48,30 @@ func ApiEndpoint(ipfspath string) (string, error) {
 }
 
 func httpGet(url string) (*http.Response, error) {
+    // Do HTTP HEAD for payload size, retain connection
+    headResponse, err := http.Head(url)
+
+    out, err := ioutil.TempFile(os.TempDir(), "ipfs")
+    defer os.Remove(out.Name())
+
+    if err != nil {
+    	return nil, fmt.Errorf("http.Head error: %s", err)
+    }
+
+    defer out.Close()
+
+    size, err := strconv.Atoi(headResponse.Header.Get("Content-Length"))
+    
+    if err != nil {
+    	return nil, fmt.Errorf("http.Head Content-Length error: %s", err)
+    }
+
+    headResponse.Body.Close()
+
+    done := make(chan int64)
+
+    go PrintProgress(done, out.Name(), int64(size))
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("http.NewRequest error: %s", err)
@@ -60,7 +84,55 @@ func httpGet(url string) (*http.Response, error) {
 		return nil, fmt.Errorf("http.DefaultClient.Do error: %s", err)
 	}
 
+    // Following line causes ipfs binary download to fail due to EOF
+    n, err := io.Copy(out, resp.Body)
+
+	if err != nil {
+		fmt.Printf("ERRORRRR")
+		return nil, fmt.Errorf("Error writing temp file to disk: %s", err)
+	}
+
+	done <- n
+
 	return resp, nil
+}
+
+func PrintProgress(done chan int64, path string, total int64) {
+	var halt bool = false
+	var progressString string = "Download progress:"
+	for {
+		select {
+		case <- done:
+			halt = true
+		default:
+			file, err := os.Open(path)
+			if err != nil {
+				return
+			}
+
+			fi, err := file.Stat()
+			if err != nil {
+				return
+			}
+
+			size := fi.Size()
+
+			if size == 0 {
+				size = 1
+			}
+
+			var percent float64 = float64(size) / float64(total) * 100
+
+			fmt.Printf("\r%s %.0f%%", progressString, percent)
+		}
+
+		if halt {
+			fmt.Printf("\r%s COMPLETE\n", progressString)
+			break
+		}
+
+		time.Sleep(time.Second)
+	}
 }
 
 func httpFetch(url string) (io.ReadCloser, error) {
